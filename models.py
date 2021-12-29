@@ -78,15 +78,16 @@ class Generator(torch.nn.Module):
         self.h = h
         self.num_kernels = len(h.resblock_kernel_sizes)
         self.num_upsamples = len(h.upsample_rates)
+        # FIRST upsamples mel-spectrograms up to k_u time
         self.conv_pre = weight_norm(Conv1d(80, h.upsample_initial_channel, 7, 1, padding=3))
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
-
+        # upsamples mel-spectrograms up to k_u times to match the temporal resolution of raw waveforms
         self.ups = nn.ModuleList()
         for i, (u, k) in enumerate(zip(h.upsample_rates, h.upsample_kernel_sizes)):
             self.ups.append(weight_norm(
                 ConvTranspose1d(h.upsample_initial_channel//(2**i), h.upsample_initial_channel//(2**(i+1)),
                                 k, u, padding=(k-u)//2)))
-
+        # multi-receptive field fusion (MRF) module for our generator, which observes patterns of various lengths in parallel
         self.resblocks = nn.ModuleList()
         for i in range(len(self.ups)):
             ch = h.upsample_initial_channel//(2**(i+1))
@@ -142,7 +143,8 @@ class DiscriminatorP(torch.nn.Module):
     def forward(self, x):
         fmap = []
 
-        # 1d to 2d
+        # 1d to 2d: By reshaping the input audio into 2D data instead of sampling periodic signals of audio, gradients 
+        # from MPD can be delivered to all time steps of the input audio.
         b, c, t = x.shape
         if t % self.period != 0: # pad first
             n_pad = self.period - (t % self.period)
@@ -164,6 +166,7 @@ class DiscriminatorP(torch.nn.Module):
 class MultiPeriodDiscriminator(torch.nn.Module):
     def __init__(self):
         super(MultiPeriodDiscriminator, self).__init__()
+        # set the periods to [2, 3, 5, 7, 11] to avoid overlaps as much as possible
         self.discriminators = nn.ModuleList([
             DiscriminatorP(2),
             DiscriminatorP(3),
@@ -173,6 +176,7 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         ])
 
     def forward(self, y, y_hat):
+        # REAL: r | FAKE: g
         y_d_rs = []
         y_d_gs = []
         fmap_rs = []
